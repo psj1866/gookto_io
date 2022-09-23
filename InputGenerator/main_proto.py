@@ -4,6 +4,8 @@ import os
 import random
 import numpy as np
 
+#git
+
 def node_ids(txt):
     if txt != '' and txt != None:
         return '1' + '0' * (7 - len(txt)) + txt
