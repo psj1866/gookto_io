@@ -417,7 +417,7 @@ for section in model.getCatalog().getObjectsByType(model.getType('GKSection')).v
     lanes = section.getLanes()
     num_lane = len(lanes)
     jam_density = section.getDataValue(model.getColumn('GKSection::jamDensityAtt'))[0] * num_lane
-    qmax = section.getCapacity()
+    qmax = section.getCapacity()*(section.getNbFullLanes()/lanes)
     ffspeed = section.getSpeed()
     min_speed = '0'
     max_speed = section.getSpeed()
@@ -454,7 +454,7 @@ for section in model.getCatalog().getObjectsByType(model.getType('GKSection')).v
 
         # cell data
         cell_list = []
-        cl = cell_length(section.getLaneLength2D(i), 5, ffspeed)
+        cl = cell_length(length, 5, ffspeed)
         offset = 0
         for j in range(int(cl[1])):
             cell_list.append([str(j), str(round(offset, 2)), str(round(cl[0], 2))])
