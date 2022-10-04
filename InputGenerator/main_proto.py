@@ -141,7 +141,7 @@ def datasave(node_list, link_list, fileName_network, fileName_OD, fileName_agent
 
         for signal_plan in node[8]:
             sub_element2 = SubElement(sub_element1, "signal_plan")
-            sub_element2.set('id', signal_plan[0])
+            sub_element2.set('phase_length', signal_plan[0])
             sub_element2.set('order', signal_plan[1])
             sub_element2.set('offset', signal_plan[2])
 
