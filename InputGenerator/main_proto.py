@@ -3,6 +3,10 @@ from xml.etree.ElementTree import Element, SubElement, ElementTree
 import os
 import random
 import numpy as np
+import shapefile as shp
+import shutil
+import os
+import datetime
 
 def node_ids(txt):
     if txt != '' and txt != None:
@@ -10,13 +14,11 @@ def node_ids(txt):
     else:
         return ''
 
-
 def link_ids(txt):
     if txt != '':
         return '2' + '0' * (7 - len(txt)) + txt
     else:
         return ''
-
 
 def cell_length(length, unit_time, ffspeed):
     cell_length = unit_time * ffspeed / 3.6  # in meter unit
@@ -27,10 +29,8 @@ def cell_length(length, unit_time, ffspeed):
     else:
         return [length, 1]
 
-
 def wavespeed(ffspeed, jam_density, capacity):
     return 1 / ((jam_density / capacity) - (1 / ffspeed))
-
 
 def turn_priority(turn):
     key = GKBezierCurve.angleToCurve(turning, turning)
@@ -96,6 +96,15 @@ def dpt_time(trip, duration):
 	cs=np.cumsum(np.random.exponential(1/flow, int(trip))*3600*10)
 	return cs
 
+def distance(a,b):
+    return ((a[0]-b[0])**2+(a[1]-b[1])**2)**0.5
+
+def unit_vector(a,b):
+    return [(b[0]-a[0])/distance(a,b), (b[1]-a[1])/distance(a,b)]
+
+def unit_normal_vector(a,b): #counterclockwise
+    return [(a[1]-b[1])/distance(a,b), (b[0]-a[0])/distance(a,b)]
+
 def datasave(node_list, link_list, fileName_network, fileName_OD, fileName_agent):  # From GUI data to xml file
 
     root1 = Element("Network")
@@ -141,7 +150,7 @@ def datasave(node_list, link_list, fileName_network, fileName_OD, fileName_agent
 
         for signal_plan in node[8]:
             sub_element2 = SubElement(sub_element1, "signal_plan")
-            sub_element2.set('id', signal_plan[0])
+            sub_element2.set('phase_length', signal_plan[0])
             sub_element2.set('order', signal_plan[1])
             sub_element2.set('offset', signal_plan[2])
 
@@ -280,6 +289,8 @@ fileName_agent = 'C:/Users/user/Desktop/Downloads/project/agents_proto.xml'
 # node data
 node_list = []
 node_terminal_list = []
+connections_list=[]
+
 for node in model.getCatalog().getObjectsByType(model.getType('GKNode')).values():
     id = node_ids(str(node.getId()))
 
@@ -301,16 +312,24 @@ for node in model.getCatalog().getObjectsByType(model.getType('GKNode')).values(
     connection_index_list = []
     i = 0
     for turning in node.getTurnings():
+        init, end = turning.pointAtPos(0), turning.pointAtPos(turning.length2D())
+        turning_init, turning_end = [init.x, init.y], [end.x, end.y]
         from_origin_lane, to_origin_lane, from_destination_lane, to_destination_lane = turning.getOriginFromLane(), turning.getOriginToLane(), turning.getDestinationFromLane(), turning.getDestinationToLane()
         for j in range(to_origin_lane - from_origin_lane + 1):
             connection_list.append([str(i), link_ids(str(turning.getOrigin().getId())), str(from_origin_lane + j),
                                     link_ids(str(turning.getDestination().getId())), str(from_destination_lane + j),
                                     str(round(turning.getSpeed(), 2)), str(round(turning.length2D(), 2)),
-                                    str(round(turning.getCapacity(), 2)), '', '', ''])
+                                    str(round(turning.getCapacity(), 2)), '', '', '', turning_init, turning_end, id+str(i), turning.length2D()])
+            connections_list.append([str(i), link_ids(str(turning.getOrigin().getId())), str(from_origin_lane + j),
+                                    link_ids(str(turning.getDestination().getId())), str(from_destination_lane + j),
+                                    str(round(turning.getSpeed(), 2)), str(round(turning.length2D(), 2)),
+                                    str(round(turning.getCapacity(), 2)), '', '', '', turning_init, turning_end,
+                                    id, turning.length2D()])
             connection_index_list.append(
                 link_ids(str(turning.getOrigin().getId())) + str(from_origin_lane + j) + link_ids(
                     str(turning.getDestination().getId())) + str(from_destination_lane + j))
             i += 1
+
 
     # signal data
     control_plan = GKSystem.getSystem().getActiveModel().getCatalog().find(1571)
@@ -331,8 +350,8 @@ for node in model.getCatalog().getObjectsByType(model.getType('GKNode')).values(
 
             # signal plan data
             duration = phase.getDuration()
-
-            if duration == yellow_time:  # Yellow signal : add to prior green signal
+             
+            if duration == yellow_time:  # Yellow signal : add to prior green signal & All stop phase
                 duration_set[-1] += duration
 
                 # phase connection data
@@ -356,7 +375,36 @@ for node in model.getCatalog().getObjectsByType(model.getType('GKNode')).values(
                 else:
                     j += 1
 
-            else:  # Green signal
+            elif phase.getInterphase()==True:  # Interphase (in consideration of all-stop which is non-yellow)
+
+                #(1)Yellow term 
+                duration_set[-1] += yellow_time #Green signal should be followed by yellow signal, so divide to yellow & remained
+
+                # phase connection data
+                phase_list.append([str(j), phase_connection_list])
+
+                if j != 1:
+                    order += ' ' + str(j)
+                    j += 1
+                else:
+                    j += 1
+
+                 #(2)Remained signal
+                duration_set.append(duration-yellow_time)
+
+                # phase connection data
+                phase_connection_list = []
+
+                if k == len(phases) - 1:  # Green signal at the end
+                    phase_list.append([str(j), phase_connection_list])
+
+                    if j != 1:
+                        order += ' ' + str(j)
+                        j += 1
+                    else:
+                        j += 1
+
+            else:  # Green signal       
                 duration_set.append(duration)
 
                 # phase connection data
@@ -404,12 +452,9 @@ for node in model.getCatalog().getObjectsByType(model.getType('GKNode')).values(
         [id, '', node_type, str(len(port_list)), str(len(connection_list)), port_list, connection_list, phase_list,
          signal_plan_list])
 
-for node in node_list:
-    print(node[7])
-
 # link data
 link_list = []
-
+link_index_list = []
 for section in model.getCatalog().getObjectsByType(model.getType('GKSection')).values():
     id = link_ids(str(section.getId()))
     type = 'straight'
@@ -417,7 +462,7 @@ for section in model.getCatalog().getObjectsByType(model.getType('GKSection')).v
     lanes = section.getLanes()
     num_lane = len(lanes)
     jam_density = section.getDataValue(model.getColumn('GKSection::jamDensityAtt'))[0] * num_lane
-    qmax = section.getCapacity()
+    qmax = section.getCapacity()*(section.getNbFullLanes()/num_lane)
     ffspeed = section.getSpeed()
     min_speed = '0'
     max_speed = section.getSpeed()
@@ -425,6 +470,7 @@ for section in model.getCatalog().getObjectsByType(model.getType('GKSection')).v
     max_veh = jam_density * length / 1000
     width = section.getWidth()
     sim_type = '0'
+
     if section.getOrigin() == None:
         from_node, to_node = str(int(link_ids(str(section.getId()))) - 10000000 + 1000000), node_ids(
             str(section.getDestination().getId()))
@@ -438,6 +484,9 @@ for section in model.getCatalog().getObjectsByType(model.getType('GKSection')).v
     else:
         from_node, to_node = node_ids(str(section.getOrigin().getId())), node_ids(str(section.getDestination().getId()))
 
+    from_coord, to_coord = section.pointAtPos(0), section.pointAtPos(section.length2D())
+    from_x, from_y, to_x, to_y = from_coord.x, from_coord.y, to_coord.x, to_coord.y
+
     # lane data
     lane_list = []
     for i, lane in enumerate(lanes):
@@ -447,14 +496,10 @@ for section in model.getCatalog().getObjectsByType(model.getType('GKSection')).v
             left_id, right_id = i - 1, ''
         else:
             left_id, right_id = i - 1, i + 1
-        from_coord, to_coord = model.getGeoModel().getCoordinateTranslator().toDegrees(
-            section.pointAtPos(0)), model.getGeoModel().getCoordinateTranslator().toDegrees(
-            section.pointAtPos(section.length2D()))
-        from_x, from_y, to_x, to_y = from_coord.x, from_coord.y, to_coord.x, to_coord.y
-
+        
         # cell data
         cell_list = []
-        cl = cell_length(section.getLaneLength2D(i), 5, ffspeed)
+        cl = cell_length(length, 5, ffspeed)
         offset = 0
         for j in range(int(cl[1])):
             cell_list.append([str(j), str(round(offset, 2)), str(round(cl[0], 2))])
@@ -504,11 +549,12 @@ for section in model.getCatalog().getObjectsByType(model.getType('GKSection')).v
     link_list.append(
         [id, type, str(round(width, 2)), str(round(wave_speed, 2)), str(round(qmax)), min_speed, str(round(max_speed)),
          str(round(max_veh)), str(round(length)), str(round(ffspeed)), str(sim_type), str(num_lane), str(from_node),
-         str(to_node), lane_list, altitude_type, section_list])
+         str(to_node), lane_list, altitude_type, section_list, [[from_x, from_y], [to_x, to_y]], cl[0]])
+
+    link_index_list.append(id)
 
 #OD, agents data
 od_list=[]
-
 for matrix in model.getCatalog().getObjectsByType(model.getType('GKODMatrix')).values():
 	#OD data
 	start_time, duration, vehicle_class=matrix.getFrom().toString('hh:mm:ss'), matrix.getDuration().toMinutes(), matrix.getVehicle().getName()
@@ -539,4 +585,133 @@ for matrix in model.getCatalog().getObjectsByType(model.getType('GKODMatrix')).v
 
 od_list=sorted(od_list, key=lambda x: (int(str(x[0][0:2])+str(x[0][3:5])+str(x[0][6:8])), float(x[1])) )
 
+def create_shp_link(link):
+
+    link_id=link[0]
+    num_lane=int(link[11])
+    init_coordinate, end_coordinate=link[17][0], link[17][1]
+    cl, lane_width= link[18], float(link[2])/float(link[11])
+    ffspeed=link[9]
+    lane_list= link[14]
+    link_coordinate_list=[]
+
+	#Create lanes which are not visualized in Aimsun Output
+
+    lane_edge_direction=unit_normal_vector(init_coordinate, end_coordinate)
+    lane_edge = [lane_width * lane_edge_direction[0], lane_width * lane_edge_direction[1]]
+    init_coordinate=[init_coordinate[0]+(num_lane/2)*lane_edge[0], init_coordinate[1]+(num_lane/2)*lane_edge[1]] #leftmost
+    end_coordinate=[end_coordinate[0]+(num_lane/2)*lane_edge[0], end_coordinate[1]+(num_lane/2)*lane_edge[1]] #leftmost
+    lane_direction = unit_vector(init_coordinate, end_coordinate)
+
+    for i, lane in enumerate(lane_list):
+
+        if lane[9]==[] :
+            lic=[init_coordinate[0]-(i+0.5)*lane_edge[0], init_coordinate[1]-(i+0.5)*lane_edge[1]]
+            lec=[end_coordinate[0]-(i+0.5)*lane_edge[0], end_coordinate[1]-(i+0.5)*lane_edge[1]]
+            link_coordinate_list.append([lic, lec, link_id, i])
+
+        else: #segment exist, consider offset  
+            for segment in lane[9]:                
+                if segment[5]=='False':
+                    lic = [init_coordinate[0]+(lane_direction[0]*float(segment[3])) - (i+0.5) * lane_edge[0],
+                           init_coordinate[1]+(lane_direction[1]*float(segment[3])) - (i+0.5) * lane_edge[1]]
+                    lec = [init_coordinate[0]+(lane_direction[0]*float(segment[4])) - (i+0.5) * lane_edge[0],
+                           init_coordinate[1]+(lane_direction[1]*float(segment[4]))- (i+0.5) * lane_edge[1]]
+                    link_coordinate_list.append([lic, lec, link_id, i])
+
+    #Divide by cell
+    cell_coordinate_list=[]
+    for link_coordinate in link_coordinate_list:
+        #current_coordinate=link_coordinate[0] #lic
+        #coordinate_list = [current_coordinate.copy()]
+        coordinate_list=[link_coordinate[0]]
+        '''
+        for i, coordinate in enumerate(section_points-1): #iteration in points along section
+        '''
+        point_distance=distance(link_coordinate[0], link_coordinate[1])
+        num_interval=int((point_distance // cl)+1)
+        for j in range(num_interval): # iteration in intervals between point and point
+            if j!=num_interval-1:
+                #current_coordinate[0]+=cl*direction[0]
+                #current_coordinate[1]+=cl*direction[1]
+                next_coordinate=[coordinate_list[0][0]+cl*lane_direction[0], coordinate_list[0][1]+cl*lane_direction[1]]
+                coordinate_list.append(next_coordinate)
+                cell_coordinate_list.append(coordinate_list+[link_coordinate[2], link_coordinate[3], j, ffspeed, lane_width, init_coordinate, lane_direction, lane_edge_direction])
+                coordinate_list=[next_coordinate.copy()]
+            else: #last interval
+                next_coordinate = link_coordinate[1]  # lec
+                if distance(coordinate_list[0], next_coordinate)>0.005: #decimal number control
+                    coordinate_list.append(next_coordinate)
+                    cell_coordinate_list.append(coordinate_list+[link_coordinate[2], link_coordinate[3], j, ffspeed, lane_width, init_coordinate, lane_direction, lane_edge_direction])
+
+    return cell_coordinate_list
+
+def create_shp_connection(connection):
+    cell_coordinate_list=[]
+    connection_node_id = connection[13]
+    connection_init_coordinate, connection_end_coordinate =  connection[11], connection[12]
+    connection_init_link_id, connection_init_lane_id, connection_end_link_id, connection_end_lane_id = connection[1], int(connection[2]), connection[3], int(connection[4])
+    connection_id=connection[0]
+    ffspeed=float(connection[5])
+    lk=link_list[link_index_list.index(connection_init_link_id)]
+    lane_width=float(lk[2])/float(lk[11])
+    #real_length, euclid_length=float(connection[6]), distance(connection_init_coordinate, connection_end_coordinate)
+    real_length, euclid_length=connection[14], distance(connection_init_coordinate, connection_end_coordinate)
+    init_link, end_link=link_list[link_index_list.index(connection_init_link_id)], link_list[link_index_list.index(connection_end_link_id)]
+    init_link_lane_width, end_link_lane_width = float(init_link[2])/float(init_link[11]), float(end_link[2])/float(end_link[11])
+    init_num_lane, end_num_lane = int(init_link[11]), int(end_link[11])
+    init_link_init_coordinate, init_link_end_coordinate =  init_link[17][0], init_link[17][1]
+    #end_link_init_coordinate, end_link_end_coordinate = end_link[17][0], end_link[17][1]
+    init_lane_edge_direction=unit_normal_vector(init_link_init_coordinate, init_link_end_coordinate)
+    init_lane_direction=unit_vector(init_link_init_coordinate, init_link_end_coordinate)
+    #end_lane_edge_direction=unit_normal_vector(end_link_init_coordinate, end_link_end_coordinate)
+
+    #origin=[init_link_init_coordinate[0]+(init_link_lane_width*init_num_lane/2)*init_lane_edge_direction[0], init_link_init_coordinate[1]+(init_link_lane_width*init_num_lane/2)*init_lane_edge_direction[1]]
+    init_link_end_coordinate=[init_link_end_coordinate[0]+(init_num_lane/2)*init_link_lane_width*init_lane_edge_direction[0],
+                               init_link_end_coordinate[1]+(init_num_lane/2)*init_link_lane_width*init_lane_edge_direction[1]] #leftmost
+    #end_link_init_coordinate=[end_link_init_coordinate[0]+(end_num_lane/2-0.5-connection_end_lane_id)*end_link_lane_width*end_lane_edge_direction[0],
+                               #end_link_init_coordinate[1]+(end_num_lane/2-0.5-connection_end_lane_id)*end_link_lane_width*end_lane_edge_direction[1]]
+    #mid_point=[(init_link_end_coordinate[0]+end_link_init_coordinate[0])/2, (init_link_end_coordinate[1]+end_link_init_coordinate[1])/2]
+    #cell_coordinate_list.extend([[init_link_end_coordinate, mid_point, connection_id, '1', '', connection_node_id, ffspeed, lane_width, real_length, euclid_length, origin],
+                                 #[mid_point, end_link_init_coordinate, connection_id, '2', '', connection_node_id, ffspeed, lane_width, real_length, euclid_length, origin]])
+    mid_point = [(connection_init_coordinate[0] + connection_end_coordinate[0]) / 2,
+                 (connection_init_coordinate[1] + connection_end_coordinate[1]) / 2]
+    uv, unv = unit_vector(mid_point, connection_end_coordinate), unit_normal_vector(mid_point, connection_end_coordinate)
+    cell_coordinate_list.extend([[connection_init_coordinate, mid_point, connection_id, '1', '', connection_node_id, ffspeed, lane_width, real_length, euclid_length, init_link_end_coordinate, uv, unv],
+    [mid_point, connection_end_coordinate, connection_id, '2', '', connection_node_id, ffspeed, lane_width, real_length, euclid_length, init_link_end_coordinate, uv, unv]])
+
+
+    return cell_coordinate_list
+
 datasave(node_list, link_list, fileName_network, fileName_OD, fileName_agent)
+
+
+#shapefile writer
+
+with shp.Writer("C:/Users/user/Desktop/Downloads/project/network") as w:
+	w.field('type','C')
+	w.field('link_id','C') 
+	w.field('lane_id','C')
+	w.field('cell_id','C')
+	w.field('time_id','C')
+	w.field('ffspd', 'F', decimal=2)
+	w.field('avg_spd', 'F', decimal=2)
+	w.field('lane_width', 'F', decimal=3)
+	w.field('length_ratio', 'F', decimal=3) #For connection
+	w.field('origin_x', 'F', decimal=3)
+	w.field('origin_y', 'F', decimal=3)
+	w.field('uv_x', 'F', decimal=3)
+	w.field('uv_y', 'F', decimal=3)
+	w.field('unv_x', 'F', decimal=3)
+	w.field('unv_y', 'F', decimal=3)
+
+	for link in link_list:
+		cell_coordinate_list=create_shp_link(link)
+		for cell_coordinate in cell_coordinate_list:
+			w.line([cell_coordinate[0:2]])
+			w.record('link',cell_coordinate[2], cell_coordinate[3], cell_coordinate[4], '', cell_coordinate[5], 0, cell_coordinate[6], None, cell_coordinate[7][0], cell_coordinate[7][1], cell_coordinate[8][0], cell_coordinate[8][1], cell_coordinate[9][0], cell_coordinate[9][1])
+	for connection in connections_list:
+		cell_coordinate_list2= create_shp_connection(connection)
+		for cell_coordinate in cell_coordinate_list2:
+			w.line([cell_coordinate[0:2]])
+			w.record('connection', cell_coordinate[5], cell_coordinate[2], '0', '', cell_coordinate[6], 0, cell_coordinate[7], cell_coordinate[9]/cell_coordinate[8], cell_coordinate[10][0],  cell_coordinate[10][1], cell_coordinate[11][0], cell_coordinate[11][1], cell_coordinate[12][0], cell_coordinate[12][1])
